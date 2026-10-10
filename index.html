@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Know Thy World</title>
     <meta
@@ -1048,6 +1048,12 @@
         opacity: 0;
       }
 
+      html,
+      body {
+        touch-action: manipulation;
+        overscroll-behavior: none;
+      }
+
       /* The chart takes the pinch gesture itself, so a two-finger zoom
            magnifies the map instead of the whole browser window */
       #map-container,
@@ -1443,6 +1449,10 @@
           border-radius: 9999px !important;
           padding: 3px 10px !important;
           font-size: 12px !important;
+        }
+        #map-container {
+          padding-left: env(safe-area-inset-left, 0px) !important;
+          padding-right: env(safe-area-inset-right, 0px) !important;
         }
       }
 
@@ -4148,21 +4158,22 @@
         const W = +svg.attr("width"),
           H = +svg.attr("height");
         const clampAxis = (b0, b1, S, txy) => {
+          const edge = Math.min(45, Math.max(16, S * 0.12));
           const g0 = b0 * k + txy,
             g1 = b1 * k + txy;
           if (g1 - g0 >= S) {
             // The globe covers the view: keep it covering to within an
             // edge of parchment; overshoot settles back at the wall
-            if (g0 > RUBBER_EDGE) return RUBBER_EDGE - b0 * k;
-            if (g1 < S - RUBBER_EDGE) return S - RUBBER_EDGE - b1 * k;
+            if (g0 > edge) return edge - b0 * k;
+            if (g1 < S - edge) return S - edge - b1 * k;
             return txy;
           }
           // The globe is smaller than the view: keep an edge of it in
           // view, settling back at the nearest wall
           const visible = Math.min(g1, S) - Math.max(g0, 0);
-          if (visible < RUBBER_EDGE) {
-            if (g0 > S - RUBBER_EDGE) return S - RUBBER_EDGE - b0 * k;
-            if (g1 < RUBBER_EDGE) return RUBBER_EDGE - b1 * k;
+          if (visible < edge) {
+            if (g0 > S - edge) return S - edge - b0 * k;
+            if (g1 < edge) return edge - b1 * k;
             return txy;
           }
           return txy;
@@ -4545,10 +4556,11 @@
 
         svg = d3.select("#svg-map").attr("width", width).attr("height", height);
 
-        // Natural Earth projection for aesthetic global proportions
+        // Natural Earth projection fitted to both width and height for balanced global proportions in landscape and portrait
+        const initialMapScale = Math.min(width / 5.8, height / 3.25);
         projection = d3
           .geoNaturalEarth1()
-          .scale(width / 5.8)
+          .scale(initialMapScale)
           .translate([width / 2, height / 2]);
 
         pathGenerator = d3.geoPath().projection(projection);
@@ -4558,14 +4570,11 @@
 
         zoomBehavior = d3
           .zoom()
-          // Deep enough that the smallest places on the chart can be
-          // brought up to something a cursor can land on: Vatican City
-          // is under a twentieth of a pixel wide at rest, and only
-          // past 200x does it become a target rather than a dot.
-          .scaleExtent([1, 300])
-          // A pixel or two of tremor between press and release still
-          // counts as a click, so shaky hands can land tiny places
-          .clickDistance(5)
+          // Deep enough that the smallest places on the chart (Vatican City, Monaco, Nauru)
+          // can be zoomed into comfortably even on small mobile screens.
+          .scaleExtent([1, 1500])
+          // Tremor allowance between press and release for comfortable mobile taps
+          .clickDistance(8)
           .on("start", (event) => {
             // A gesture begins: forget the last drag and decide
             // whether this one may end in a fling — a lone-pointer
@@ -6619,13 +6628,13 @@
       // stretch of the track — 300x is not a hundred and fifty times the
       // journey that 2x is.
       function sliderToZoom(v) {
-        const cap = (zoomBehavior && zoomBehavior.scaleExtent()[1]) || 300;
+        const cap = (zoomBehavior && zoomBehavior.scaleExtent()[1]) || 1500;
         const t = Math.max(0, Math.min(100, +v)) / 100;
         return Math.exp(t * Math.log(cap));
       }
 
       function zoomToSlider(k) {
-        const cap = (zoomBehavior && zoomBehavior.scaleExtent()[1]) || 300;
+        const cap = (zoomBehavior && zoomBehavior.scaleExtent()[1]) || 1500;
         if (!(k > 1)) return 0;
         return Math.max(0, Math.min(100, (100 * Math.log(k)) / Math.log(cap)));
       }
@@ -7040,6 +7049,38 @@
         const viaSubUnit = parent === targetId;
         let answersTarget = clickedId === targetId || viaSubUnit;
 
+        // Proximity rescue for tiny micro-states (Vatican City, Monaco, San Marino, etc.)
+        // Ensures taps slightly touching the neighboring border still count on mobile
+        if (!answersTarget && state.currentTarget) {
+          const curId = state.currentTarget.id;
+          const TINY_PROXIMITY_FIDS = new Set([
+            "336", // Vatican City
+            "674", // San Marino
+            "492", // Monaco
+            "438", // Liechtenstein
+            "020", // Andorra
+            "520", // Nauru
+            "798", // Tuvalu
+            "670", // St. Vincent
+          ]);
+          if (TINY_PROXIMITY_FIDS.has(curId)) {
+            const targetFeature = findTargetFeature(curId);
+            if (targetFeature) {
+              const anchor = largestPartAnchor(targetFeature);
+              if (anchor) {
+                const [tapX, tapY] = d3.pointer(event, gMap.node());
+                const currentK = currentZoomK();
+                const distScreen =
+                  Math.hypot(tapX - anchor.cx, tapY - anchor.cy) * currentK;
+                if (distScreen <= 28) {
+                  clickedId = curId;
+                  answersTarget = true;
+                }
+              }
+            }
+          }
+        }
+
         // If current target is a Canadian capital, and provinces are NOT in the quiz:
         // Clicking the matching province can also answer the capital
         if (!answersTarget && state.currentTarget.isCanadaCapital) {
@@ -7211,36 +7252,194 @@
         }
       }
 
+      // Compute accurate bounding box and visual center for any feature,
+      // handling antimeridian-wrapping island nations like Fiji and Kiribati,
+      // as well as Points and multi-polygons.
+      function getFeatureBounds(feature) {
+        if (!feature || !pathGenerator) return null;
+        if (feature.geometry && feature.geometry.type === "Point") {
+          const coords = feature.geometry.coordinates;
+          const pt = projection ? projection(coords) : null;
+          if (!pt) return null;
+          return {
+            x0: pt[0] - 10,
+            y0: pt[1] - 10,
+            x1: pt[0] + 10,
+            y1: pt[1] + 10,
+            cx: pt[0],
+            cy: pt[1],
+            bw: 20,
+            bh: 20,
+          };
+        }
+
+        const b = pathGenerator.bounds(feature);
+        const w = Math.abs(b[1][0] - b[0][0]);
+        const h = Math.abs(b[1][1] - b[0][1]);
+        const maxW = globeWidth() * 0.45;
+
+        // If the feature does NOT cross the antimeridian, use its standard bounding box
+        if (w <= maxW) {
+          return {
+            x0: b[0][0],
+            y0: b[0][1],
+            x1: b[1][0],
+            y1: b[1][1],
+            cx: (b[0][0] + b[1][0]) / 2,
+            cy: (b[0][1] + b[1][1]) / 2,
+            bw: Math.max(1e-6, w),
+            bh: Math.max(1e-6, h),
+          };
+        }
+
+        // For antimeridian-spanning countries (Fiji, Kiribati, Russia, USA, etc.):
+        // Gather individual polygons and group them into East vs West hemisphere clusters
+        const geom = feature.geometry;
+        const polys =
+          geom.type === "Polygon"
+            ? [geom.coordinates]
+            : geom.type === "MultiPolygon"
+              ? geom.coordinates
+              : [];
+
+        const W = svg ? +svg.attr("width") || 800 : 800;
+        const eastParts = [];
+        const westParts = [];
+
+        polys.forEach((rings) => {
+          const part = {
+            type: "Feature",
+            properties: feature.properties,
+            geometry: { type: "Polygon", coordinates: rings },
+          };
+          const pb = pathGenerator.bounds(part);
+          const pw = Math.abs(pb[1][0] - pb[0][0]);
+          const ph = Math.abs(pb[1][1] - pb[0][1]);
+          if (!(pw > 0) || !(ph > 0)) return;
+          let geoArea = 0;
+          try {
+            geoArea = d3.geoArea(part);
+          } catch (e) {
+            geoArea = 0;
+          }
+          // Skip artificial antimeridian split seam slivers
+          if (pw > maxW && geoArea < 0.005) return;
+
+          let c = null;
+          if (pw > maxW) {
+            try {
+              const gc = d3.geoCentroid(part);
+              if (gc) c = projection(gc);
+            } catch (e) {}
+          }
+          if (!c || isNaN(c[0])) c = pathGenerator.centroid(part);
+          if (isNaN(c[0])) return;
+
+          const partInfo = {
+            bounds: pb,
+            w: Math.min(pw, maxW),
+            h: ph,
+            cx: c[0],
+            cy: c[1],
+            area: geoArea > 0 ? geoArea : pw * ph,
+          };
+          if (c[0] >= W / 2) {
+            eastParts.push(partInfo);
+          } else {
+            westParts.push(partInfo);
+          }
+        });
+
+        // Choose the dominant group (the one with the largest total landmass area)
+        const eastArea = eastParts.reduce((acc, p) => acc + p.area, 0);
+        const westArea = westParts.reduce((acc, p) => acc + p.area, 0);
+        const dominant =
+          eastArea >= westArea
+            ? eastParts.length ? eastParts : westParts
+            : westParts.length ? westParts : eastParts;
+
+        if (dominant.length > 0) {
+          let minX = Infinity,
+            minY = Infinity,
+            maxX = -Infinity,
+            maxY = -Infinity;
+          dominant.forEach((p) => {
+            const pb = p.bounds;
+            if (p.w <= maxW) {
+              minX = Math.min(minX, pb[0][0]);
+              maxX = Math.max(maxX, pb[1][0]);
+            } else {
+              minX = Math.min(minX, p.cx - p.w / 2);
+              maxX = Math.max(maxX, p.cx + p.w / 2);
+            }
+            minY = Math.min(minY, pb[0][1]);
+            maxY = Math.max(maxY, pb[1][1]);
+          });
+          const bw = Math.max(1e-6, maxX - minX);
+          const bh = Math.max(1e-6, maxY - minY);
+          return {
+            x0: minX,
+            y0: minY,
+            x1: maxX,
+            y1: maxY,
+            cx: (minX + maxX) / 2,
+            cy: (minY + maxY) / 2,
+            bw,
+            bh,
+          };
+        }
+
+        const anchor = largestPartAnchor(feature);
+        if (anchor) {
+          return {
+            x0: anchor.cx - anchor.w / 2,
+            y0: anchor.cy - anchor.h / 2,
+            x1: anchor.cx + anchor.w / 2,
+            y1: anchor.cy + anchor.h / 2,
+            cx: anchor.cx,
+            cy: anchor.cy,
+            bw: Math.max(1e-6, anchor.w),
+            bh: Math.max(1e-6, anchor.h),
+          };
+        }
+
+        return {
+          x0: b[0][0],
+          y0: b[0][1],
+          x1: b[1][0],
+          y1: b[1][1],
+          cx: (b[0][0] + b[1][0]) / 2,
+          cy: (b[0][1] + b[1][1]) / 2,
+          bw: Math.max(1e-6, w),
+          bh: Math.max(1e-6, h),
+        };
+      }
+
       // Swing the chart so a region sits in the middle of the view at a
       // magnification that makes even a speck-sized country readable.
       function centreOnFeature(feature, opts) {
         if (!feature || !svg || !zoomBehavior || !pathGenerator) return;
         const o = opts || {};
-        const [[x0, y0], [x1, y1]] = pathGenerator.bounds(feature);
+        const fb = getFeatureBounds(feature);
+        if (!fb) return;
         const W = +svg.attr("width"),
           H = +svg.attr("height");
-        const bw = Math.max(1e-6, x1 - x0),
-          bh = Math.max(1e-6, y1 - y0);
-        // Fit the region into ~70% of the view; never below 1 (the chart
-        // starts whole) and never past the zoom range's ceiling — so a
-        // whole country is framed at once, and Vatican City, at a
-        // twentieth of a pixel wide, is brought up to something that can
-        // be pointed at. Points (e.g. capital cities) use a preset comfortable scale.
+        // Fit the region into ~70% of the view; never below 1 and never past the zoom ceiling
         const fit =
           feature.geometry && feature.geometry.type === "Point"
             ? o.pointScale || 9
-            : 0.7 * Math.min(W / bw, H / bh);
-        const ceiling = zoomBehavior ? zoomBehavior.scaleExtent()[1] : 300;
+            : 0.7 * Math.min(W / fb.bw, H / fb.bh);
+        const ceiling = zoomBehavior ? zoomBehavior.scaleExtent()[1] : 1500;
         const k = Math.max(1, Math.min(o.maxScale || Infinity, ceiling, fit));
+        const tx = W / 2 - k * fb.cx;
+        const ty = H / 2 - k * fb.cy;
+        svg.interrupt("rubber");
         svg
           .transition()
           .duration(o.duration || 700)
           .call(
             zoomBehavior.transform,
-            d3.zoomIdentity
-              .translate(W / 2, H / 2)
-              .scale(k)
-              .translate(-(x0 + x1) / 2, -(y0 + y1) / 2),
+            d3.zoomIdentity.translate(tx, ty).scale(k),
           );
       }
 
@@ -8186,6 +8385,25 @@
           .select(node)
           .style("font-size", fs + "px")
           .style("stroke-width", stroke + "px");
+
+        // Vatican City ("336"): dynamically maintained slightly above the tiny area
+        // so users can always see Vatican City without the label obscuring it.
+        if (node.dataset.labelId === "336" && node._vaticanAnchor) {
+          const pt = node._vaticanAnchor;
+          const totalLineH = count * 1.15 * fsScreen;
+          const vaticanRadiusScreen = Math.max(3, (pt.h / 2) * kk);
+          const offsetScreen = vaticanRadiusScreen + totalLineH / 2 + 5;
+          const ax = pt.cx;
+          const ay = pt.cy - offsetScreen / kk;
+          sel.attr("x", ax).attr("y", ay).selectAll("tspan").attr("x", ax);
+          sel.selectAll("tspan").each(function (d, i) {
+            d3.select(this).attr(
+              "dy",
+              i === 0 ? -((count - 1) / 2) * 1.15 * fs : 1.15 * fs,
+            );
+          });
+          return;
+        }
         const tie = node._tiedTo,
           at = node._tiedAt;
         if (tie && at) {
@@ -8826,8 +9044,16 @@
             fs: 2.0,
           }))[0];
           const rel = relFor(v);
-          const spot = anchorFor({ x: anchor.cx, y: anchor.cy }, rel);
+          const isVatican = fid === "336";
+          const yOffset = isVatican
+            ? -(anchor.h / 2 + rel.h / 2 + 6 / Math.max(1, currentZoomK()))
+            : 0;
+          const spot = anchorFor({ x: anchor.cx, y: anchor.cy + yOffset }, rel);
           const n = draw(spot.x, spot.y, v);
+          n.attr("data-label-id", fid);
+          if (isVatican) {
+            n.node()._vaticanAnchor = anchor;
+          }
           const real = realBox(n) || boxAt(spot, rel);
           const atX = +n.attr("x"),
             atY = +n.attr("y");
@@ -8838,7 +9064,7 @@
               x: atX,
               y: atY,
               v: v,
-              ref: { x: anchor.cx, y: anchor.cy },
+              ref: { x: anchor.cx, y: anchor.cy + yOffset },
               rel: { x: real.x - atX, y: real.y - atY, w: real.w, h: real.h },
             },
           };
@@ -11545,12 +11771,14 @@
       }
 
       let resizeSettleTimer = 0;
-      window.addEventListener("resize", () => {
+      function handleMapResize() {
         resetViewportScroll();
         if (!svg || !gMap || !projection) return;
         const container = document.getElementById("map-container");
+        if (!container) return;
         const width = container.clientWidth;
         const height = container.clientHeight;
+        if (!width || !height) return;
 
         // The projection is rebuilt here, so every coordinate the label
         // layout is holding has just moved: retire the placement cache
@@ -11563,7 +11791,14 @@
         globeWidthCache = null;
 
         svg.attr("width", width).attr("height", height);
-        projection.scale(width / 5.8).translate([width / 2, height / 2]);
+        // Fit both width and height so the globe stays centered and fully visible in landscape and portrait
+        const mapScale = Math.min(width / 5.8, height / 3.25);
+        projection.scale(mapScale).translate([width / 2, height / 2]);
+
+        if (panLocked()) {
+          svg.call(zoomBehavior.transform, d3.zoomIdentity);
+        }
+
         gMap
           .selectAll("path.map-country:not(.map-island-ring)")
           .attr("d", pathGenerator);
@@ -11584,7 +11819,37 @@
           buildMinimap();
           repositionLabels();
         }, 200);
-      });
+      }
+
+      window.addEventListener("resize", handleMapResize);
+
+      // Prevent browser magnification / pinch zoom so the user never loses the game UI
+      document.addEventListener("gesturestart", (e) => e.preventDefault(), { passive: false });
+      document.addEventListener("gesturechange", (e) => e.preventDefault(), { passive: false });
+      document.addEventListener("gestureend", (e) => e.preventDefault(), { passive: false });
+      window.addEventListener(
+        "wheel",
+        (e) => {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+          }
+        },
+        { passive: false },
+      );
+      let lastGlobalTouchEnd = 0;
+      document.addEventListener(
+        "touchend",
+        (e) => {
+          const now = performance.now();
+          if (now - lastGlobalTouchEnd <= 300) {
+            if (!e.target || !e.target.closest("input, select, textarea, button")) {
+              e.preventDefault();
+            }
+          }
+          lastGlobalTouchEnd = now;
+        },
+        { passive: false },
+      );
 
       window.onload = function () {
         const stamp = document.getElementById("btn-version");
@@ -11605,12 +11870,21 @@
           setTimeout(resetViewportScroll, 300);
           setTimeout(fitMobileTargetText, 100);
           setTimeout(fitMobileTargetText, 350);
+          // Re-measure container and update projection once orientation rotation finishes
+          setTimeout(handleMapResize, 50);
+          setTimeout(handleMapResize, 150);
+          setTimeout(handleMapResize, 350);
         });
         if (typeof ResizeObserver !== "undefined") {
           const mobBox = document.getElementById("mobile-target-box");
           if (mobBox) {
             const ro = new ResizeObserver(() => fitMobileTargetText());
             ro.observe(mobBox);
+          }
+          const mapEl = document.getElementById("map-container");
+          if (mapEl) {
+            const roMap = new ResizeObserver(() => handleMapResize());
+            roMap.observe(mapEl);
           }
         }
         fitMobileTargetText();
